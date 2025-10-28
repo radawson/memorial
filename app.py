@@ -225,30 +225,45 @@ def serve_image(file_id):
         return Response(status=404)
 
 def get_photos():
-    """Get photos from cache or refresh from Drive if needed"""
-    # Check if we need to refresh the cache
-    if should_refresh_cache():
-        print("Cache expired or empty, fetching from Google Drive...")
+    """Get photos from cache - ALWAYS return cached data immediately"""
+    # ALWAYS return cached data first for instant loading
+    cached_photos = get_photos_from_db()
+    
+    if cached_photos and len(cached_photos) > 0:
+        print(f"✓ Returning {len(cached_photos)} cached photos")
+        
+        # Check in background if we need to refresh (non-blocking)
+        if should_refresh_cache():
+            print("⏰ Cache refresh needed - starting background refresh...")
+            refresh_cache_async()
+        
+        return cached_photos
+    else:
+        # No cache exists - need to fetch for first time (blocking)
+        print("📥 No cache found, fetching from Google Drive (first run)...")
         photos = fetch_photos_from_drive()
         if photos and len(photos) > 0:
             save_photos_to_db(photos)
-            print(f"✓ Refreshed cache with {len(photos)} photos")
+            print(f"✓ Initial cache created with {len(photos)} photos")
             return photos
         else:
-            print("⚠ Failed to fetch from Drive (or 0 photos returned), using cached data")
-            # Fall back to existing cached data - don't clear the database!
-            cached_photos = get_photos_from_db()
-            if cached_photos and len(cached_photos) > 0:
-                print(f"✓ Using {len(cached_photos)} cached photos")
-                return cached_photos
-            else:
-                print("✗ No cached photos available!")
-                return []
-    else:
-        print("Using cached photos from database")
-        photos = get_photos_from_db()
+            print("✗ Failed to fetch photos from Drive")
+            return []
+
+def refresh_cache_async():
+    """Refresh the cache in a background thread without blocking the response"""
+    def refresh_worker():
+        print("🔄 Background refresh starting...")
+        photos = fetch_photos_from_drive()
+        if photos and len(photos) > 0:
+            save_photos_to_db(photos)
+            print(f"✓ Background refresh complete: {len(photos)} photos in cache")
+        else:
+            print("⚠ Background refresh failed, keeping existing cache")
     
-    return photos
+    # Start refresh in background thread
+    thread = threading.Thread(target=refresh_worker, daemon=True)
+    thread.start()
 
 @app.route('/api/photos')
 def api_photos():
@@ -281,14 +296,16 @@ def api_photos():
 
 @app.route('/api/refresh')
 def api_refresh():
-    """Force refresh photos from Google Drive"""
-    print("Manual refresh requested...")
+    """Force refresh photos from Google Drive (blocking for manual requests)"""
+    print("📥 Manual refresh requested...")
     photos = fetch_photos_from_drive()
-    if photos:
+    if photos and len(photos) > 0:
         save_photos_to_db(photos)
         return jsonify({'success': True, 'count': len(photos), 'message': 'Photos refreshed successfully'})
     else:
-        return jsonify({'success': False, 'message': 'Failed to fetch photos from Drive'}), 500
+        # Return current cache even if refresh failed
+        cached = get_photos_from_db()
+        return jsonify({'success': False, 'count': len(cached), 'message': 'Failed to fetch from Drive, using cached photos'}), 200
 
 if __name__ == '__main__':
     init_db()

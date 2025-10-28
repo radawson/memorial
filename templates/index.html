@@ -118,10 +118,10 @@
                     return;
                 }
                 
-                // Start refresh countdown timer
+                // Start refresh countdown timer (but DON'T auto-reload!)
                 if (data.cache_info && data.cache_info.seconds_until_refresh !== undefined) {
                     secondsUntilRefresh = data.cache_info.seconds_until_refresh;
-                    console.log(`Cache expires in ${secondsUntilRefresh} seconds (${Math.floor(secondsUntilRefresh/60)} minutes)`);
+                    console.log(`Next background check in ${secondsUntilRefresh} seconds (${Math.floor(secondsUntilRefresh/60)} minutes)`);
                     startRefreshTimer();
                 } else {
                     console.log('No cache info received from server');
@@ -148,7 +148,7 @@
                 timerElement.textContent = `Next update in: ${formatTime(secondsUntilRefresh)}`;
                 secondsUntilRefresh--;
             } else if (secondsUntilRefresh === 0) {
-                // Only trigger reload once
+                // Only trigger check once
                 secondsUntilRefresh = -1;
                 
                 // Stop the timer
@@ -156,12 +156,10 @@
                     clearInterval(refreshTimerInterval);
                     refreshTimerInterval = null;
                 }
-                timerElement.textContent = 'Checking for new photos...';
-                // Reload the page to get fresh photos
-                console.log('Timer expired, reloading page...');
-                setTimeout(() => {
-                    window.location.reload();
-                }, 1000);
+                timerElement.textContent = 'Checking for updates...';
+                // Check for new photos in background (don't reload!)
+                console.log('Timer expired, checking for new photos in background...');
+                checkForNewPhotos();
             }
         }
         
@@ -170,6 +168,31 @@
             if (refreshTimerInterval) clearInterval(refreshTimerInterval);
             updateRefreshTimer(); // Update immediately
             refreshTimerInterval = setInterval(updateRefreshTimer, 1000);
+        }
+        
+        // Check for new photos without reloading the page
+        async function checkForNewPhotos() {
+            try {
+                const response = await fetch('/api/photos');
+                const data = await response.json();
+                
+                if (data.count > photos.length) {
+                    console.log(`✨ Found ${data.count - photos.length} new photos!`);
+                    document.getElementById('refresh-timer').textContent = `${data.count - photos.length} new photos found - reload to see them`;
+                } else {
+                    console.log('No new photos found');
+                    // Restart the timer for next check
+                    if (data.cache_info && data.cache_info.seconds_until_refresh !== undefined) {
+                        secondsUntilRefresh = data.cache_info.seconds_until_refresh;
+                        startRefreshTimer();
+                    }
+                }
+            } catch (error) {
+                console.error('Error checking for new photos:', error);
+                // Retry in 1 minute
+                secondsUntilRefresh = 60;
+                startRefreshTimer();
+            }
         }
         
         // Initialize the slideshow
