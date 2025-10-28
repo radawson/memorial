@@ -92,6 +92,8 @@
         <span id="status">Playing</span>
         <span>|</span>
         <span id="counter">1 / 0</span>
+        <span>|</span>
+        <span id="refresh-timer" class="text-sm">Next update in: --:--</span>
         <span class="text-xs text-gray-400">SPACE: Pause | ← →: Navigate</span>
     </div>
 
@@ -100,6 +102,8 @@
         let currentIndex = 0;
         let isPaused = false;
         let intervalId = null;
+        let refreshTimerInterval = null;
+        let secondsUntilRefresh = 0;
         const SLIDE_DURATION = 7000; // 7 seconds (in the middle of 5-10 range)
         
         // Fetch photos from API
@@ -114,11 +118,58 @@
                     return;
                 }
                 
+                // Start refresh countdown timer
+                if (data.cache_info && data.cache_info.seconds_until_refresh !== undefined) {
+                    secondsUntilRefresh = data.cache_info.seconds_until_refresh;
+                    console.log(`Cache expires in ${secondsUntilRefresh} seconds (${Math.floor(secondsUntilRefresh/60)} minutes)`);
+                    startRefreshTimer();
+                } else {
+                    console.log('No cache info received from server');
+                }
+                
                 initSlideshow();
             } catch (error) {
                 console.error('Error loading photos:', error);
                 document.getElementById('loading').innerHTML = '<div>Error loading photos. Check console.</div>';
             }
+        }
+        
+        // Format seconds as MM:SS
+        function formatTime(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = seconds % 60;
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+        
+        // Update the refresh timer display
+        function updateRefreshTimer() {
+            const timerElement = document.getElementById('refresh-timer');
+            if (secondsUntilRefresh > 0) {
+                timerElement.textContent = `Next update in: ${formatTime(secondsUntilRefresh)}`;
+                secondsUntilRefresh--;
+            } else if (secondsUntilRefresh === 0) {
+                // Only trigger reload once
+                secondsUntilRefresh = -1;
+                
+                // Stop the timer
+                if (refreshTimerInterval) {
+                    clearInterval(refreshTimerInterval);
+                    refreshTimerInterval = null;
+                }
+                timerElement.textContent = 'Checking for new photos...';
+                // Reload the page to get fresh photos
+                console.log('Timer expired, reloading page...');
+                setTimeout(() => {
+                    window.location.reload();
+                }, 1000);
+            }
+        }
+        
+        // Start the refresh countdown timer
+        function startRefreshTimer() {
+            if (refreshTimerInterval) clearInterval(refreshTimerInterval);
+            updateRefreshTimer(); // Update immediately
+            refreshTimerInterval = setInterval(updateRefreshTimer, 1000);
         }
         
         // Initialize the slideshow
@@ -138,6 +189,28 @@
                 img.alt = photo.name;
                 img.loading = 'lazy';
                 
+                // Track retry attempts to prevent infinite loops
+                let retryCount = 0;
+                const maxRetries = 5;
+                
+                // Handle images that aren't downloaded yet
+                img.onerror = function() {
+                    if (retryCount < maxRetries) {
+                        retryCount++;
+                        console.log(`⏳ Image not yet cached (attempt ${retryCount}/${maxRetries}): ${photo.name}`);
+                        // Retry in a few seconds
+                        setTimeout(() => {
+                            img.src = photo.url + '?retry=' + Date.now();
+                        }, 5000);
+                    } else {
+                        console.log(`✗ Failed to load after ${maxRetries} attempts: ${photo.name}`);
+                    }
+                };
+                
+                img.onload = function() {
+                    console.log(`✓ Loaded: ${photo.name}`);
+                };
+                
                 slide.appendChild(img);
                 slideshow.appendChild(slide);
             });
@@ -146,14 +219,42 @@
             loading.style.display = 'none';
             controls.style.display = 'flex';
             
-            // Show first slide
-            showSlide(0);
+            // Resume from last position or start from beginning
+            const lastIndex = getLastPhotoIndex();
+            showSlide(lastIndex);
             
             // Start auto-advance
             startAutoPlay();
             
             // Update counter
             updateCounter();
+        }
+        
+        // Get last photo index from localStorage
+        function getLastPhotoIndex() {
+            try {
+                const saved = localStorage.getItem('lastPhotoIndex');
+                if (saved !== null) {
+                    const index = parseInt(saved, 10);
+                    // Make sure index is valid for current photo count
+                    if (index >= 0 && index < photos.length) {
+                        console.log(`Resuming from photo ${index + 1} of ${photos.length}`);
+                        return index;
+                    }
+                }
+            } catch (e) {
+                console.error('Error reading lastPhotoIndex:', e);
+            }
+            return 0; // Start from beginning if nothing saved
+        }
+        
+        // Save current photo index to localStorage
+        function saveLastPhotoIndex(index) {
+            try {
+                localStorage.setItem('lastPhotoIndex', index.toString());
+            } catch (e) {
+                console.error('Error saving lastPhotoIndex:', e);
+            }
         }
         
         // Show specific slide
@@ -170,6 +271,7 @@
             }
             
             currentIndex = index;
+            saveLastPhotoIndex(index); // Save position for next reload
             updateCounter();
         }
         

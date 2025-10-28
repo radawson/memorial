@@ -4,6 +4,9 @@
 # SQLite database
 photos.db
 
+# Cached images
+cached_images/
+
 # Python
 __pycache__/
 *.py[cod]
