@@ -137,73 +137,136 @@ def download_images_async(files_to_download):
 
 def fetch_photos_from_drive():
     """Fetch all image files from the public Google Drive folder"""
+    print("\n=== FETCH PHOTOS FROM DRIVE ===")
     try:
-        # Check if API key is set
+        # ------------------------------------------------------------------
+        # 1. BASIC SANITY CHECKS
+        # ------------------------------------------------------------------
         if not GOOGLE_API_KEY:
-            print("✗ ERROR: GOOGLE_API_KEY not set in .env file!")
+            print("ERROR: GOOGLE_API_KEY not set in .env file!")
             return []
-        
-        # Build the Drive API client with API key (for public folders)
-        print(f"🔍 Querying folder: {GOOGLE_DRIVE_FOLDER_ID}")
-        service = build('drive', 'v3', developerKey=GOOGLE_API_KEY)
-        
-        # Query for all image files in the folder
-        # Set pageSize to 1000 (max allowed) to get all photos
-        results = service.files().list(
-            q=f"'{GOOGLE_DRIVE_FOLDER_ID}' in parents and (mimeType contains 'image/')",
-            fields="files(id, name, mimeType, thumbnailLink)",
+        if not GOOGLE_DRIVE_FOLDER_ID:
+            print("ERROR: GOOGLE_DRIVE_FOLDER_ID not set!")
+            return []
+
+        print(f"Using API key: {GOOGLE_API_KEY[:8]}…")
+        print(f"Folder ID      : {GOOGLE_DRIVE_FOLDER_ID}")
+
+        # ------------------------------------------------------------------
+        # 2. BUILD THE SERVICE (with a tiny timeout so we fail fast)
+        # ------------------------------------------------------------------
+        from googleapiclient.discovery import build
+        from googleapiclient.errors import HttpError
+        import httplib2
+
+        service = build('drive', 'v3',
+                        developerKey=GOOGLE_API_KEY,
+                        cache_discovery=False)   # avoid stale discovery cache
+
+        # ------------------------------------------------------------------
+        # 3. FIRST PAGE – we also capture the raw response for debugging
+        # ------------------------------------------------------------------
+        query = f"'{GOOGLE_DRIVE_FOLDER_ID}' in parents and mimeType contains 'image/'"
+        print(f"Query          : {query}")
+
+        request = service.files().list(
+            q=query,
+            fields="nextPageToken, files(id, name, mimeType, thumbnailLink, webViewLink)",
             orderBy='name',
             pageSize=1000
-        ).execute()
-        
+        )
+
+        # Execute the request inside a try/except that prints *everything*
+        try:
+            results = request.execute(http=httplib2.Http(timeout=30))
+        except HttpError as http_err:
+            # Google-specific HTTP error (401, 403, 404, …)
+            print(f"HTTP ERROR {http_err.resp.status} from Drive API:")
+            print(http_err.content.decode())
+            return []
+        except Exception as exc:
+            print(f"UNEXPECTED EXCEPTION while calling Drive API:")
+            import traceback
+            traceback.print_exc()
+            return []
+
         files = results.get('files', [])
-        print(f"📊 Drive API returned {len(files)} files")
-        
-        # If there are more than 1000 files, handle pagination
-        while 'nextPageToken' in results:
-            results = service.files().list(
-                q=f"'{GOOGLE_DRIVE_FOLDER_ID}' in parents and (mimeType contains 'image/')",
-                fields="files(id, name, mimeType, thumbnailLink)",
+        print(f"First page returned {len(files)} files")
+        print(f"Raw first-page keys: {list(results.keys())}")
+
+        # ------------------------------------------------------------------
+        # 4. PAGINATION LOOP (with the same detailed logging)
+        # ------------------------------------------------------------------
+        page_token = results.get('nextPageToken')
+        page = 1
+        while page_token:
+            page += 1
+            print(f"Fetching page {page} (token={page_token[:20]}…)")
+            request = service.files().list(
+                q=query,
+                fields="nextPageToken, files(id, name, mimeType, thumbnailLink, webViewLink)",
                 orderBy='name',
                 pageSize=1000,
-                pageToken=results['nextPageToken']
-            ).execute()
-            files.extend(results.get('files', []))
-        
-        # Build photo list and identify which images need downloading
+                pageToken=page_token
+            )
+            try:
+                results = request.execute(http=httplib2.Http(timeout=30))
+            except HttpError as http_err:
+                print(f"HTTP ERROR on page {page}: {http_err.resp.status}")
+                print(http_err.content.decode())
+                break
+            except Exception as exc:
+                print(f"Exception on page {page}:")
+                import traceback
+                traceback.print_exc()
+                break
+
+            page_files = results.get('files', [])
+            files.extend(page_files)
+            print(f"Page {page} added {len(page_files)} files (total now {len(files)})")
+            page_token = results.get('nextPageToken')
+
+        # ------------------------------------------------------------------
+        # 5. FINAL SUMMARY
+        # ------------------------------------------------------------------
+        print(f"TOTAL files retrieved from Drive: {len(files)}")
+        if not files:
+            print("WARNING: No files matched the query – check folder ID, sharing, and MIME filter.")
+            return []
+
+        # ------------------------------------------------------------------
+        # 6. BUILD PHOTO LIST + schedule missing downloads
+        # ------------------------------------------------------------------
         photo_urls = []
         files_to_download = []
-        
+
         for file in files:
-            file_id = file['id']
-            file_name = file['name']
+            file_id   = file['id']
+            file_name = file.get('name', '(no name)')
             cache_path = os.path.join(CACHE_DIR, file_id)
-            
-            # Add to photo list regardless of cache status
-            photo_url = f"/images/{file_id}"
+
             photo_urls.append({
-                'id': file_id,
-                'name': file_name,
-                'url': photo_url
+                'id'   : file_id,
+                'name' : file_name,
+                'url'  : f"/images/{file_id}"
             })
-            
-            # Track which images need downloading
+
             if not os.path.exists(cache_path):
                 files_to_download.append((file_id, file_name))
-        
-        # Download missing images asynchronously
+
         if files_to_download:
-            print(f"📥 {len(files_to_download)} new images need downloading")
+            print(f"{len(files_to_download)} images are missing locally – starting async download")
             download_images_async(files_to_download)
         else:
-            print(f"✓ All {len(files)} images already cached")
-        
-        print(f"✓ Prepared {len(photo_urls)} photo URLs")
+            print("All images already cached locally")
+
+        print("=== FETCH COMPLETE ===\n")
         return photo_urls
+
     except Exception as e:
-        print(f"✗ ERROR fetching photos from Drive: {e}")
-        import traceback
-        traceback.print_exc()
+        print("FATAL ERROR in fetch_photos_from_drive():")
+        import traceback, sys
+        traceback.print_exc(file=sys.stdout)
         return []
 
 @app.route('/')
@@ -293,6 +356,32 @@ def api_photos():
         'count': len(photos),
         'cache_info': cache_info
     })
+
+@app.route('/api/debug/drive')
+def debug_drive():
+    """Return the raw JSON that the Drive API gave us (or the error)"""
+    photos = fetch_photos_from_drive()
+    # Re-run the same query but capture the *raw* response dict
+    try:
+        service = build('drive', 'v3', developerKey=GOOGLE_API_KEY, cache_discovery=False)
+        results = service.files().list(
+            q=f"'{GOOGLE_DRIVE_FOLDER_ID}' in parents and mimeType contains 'image/'",
+            fields="nextPageToken, files(id, name, mimeType, thumbnailLink, webViewLink)",
+            pageSize=1000
+        ).execute()
+        return jsonify({
+            "raw_drive_response": results,
+            "photo_count": len(photos),
+            "cached_photos": get_photos_from_db()
+        })
+    except Exception as e:
+        import traceback, io, sys
+        buf = io.StringIO()
+        traceback.print_exc(file=buf)
+        return jsonify({
+            "error": str(e),
+            "traceback": buf.getvalue()
+        }), 500
 
 @app.route('/api/refresh')
 def api_refresh():
