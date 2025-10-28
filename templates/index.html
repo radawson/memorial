@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Memorial Slideshow</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #000;
+        }
+        
+        .slide {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100vh;
+            opacity: 0;
+            transition: opacity 1s ease-in-out;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .slide.active {
+            opacity: 1;
+            z-index: 1;
+        }
+        
+        .slide img {
+            max-width: 100%;
+            max-height: 100vh;
+            object-fit: contain;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+        }
+        
+        .controls {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 100;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px 20px;
+            border-radius: 8px;
+            color: white;
+            font-family: sans-serif;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+        
+        .loading {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-family: sans-serif;
+            font-size: 24px;
+            z-index: 200;
+        }
+        
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top: 4px solid white;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div id="loading" class="loading">
+        <div class="spinner"></div>
+        <div>Loading photos...</div>
+    </div>
+    
+    <div id="slideshow"></div>
+    
+    <div class="controls" id="controls" style="display: none;">
+        <span id="status">Playing</span>
+        <span>|</span>
+        <span id="counter">1 / 0</span>
+        <span class="text-xs text-gray-400">SPACE: Pause | ← →: Navigate</span>
+    </div>
+
+    <script>
+        let photos = [];
+        let currentIndex = 0;
+        let isPaused = false;
+        let intervalId = null;
+        const SLIDE_DURATION = 7000; // 7 seconds (in the middle of 5-10 range)
+        
+        // Fetch photos from API
+        async function loadPhotos() {
+            try {
+                const response = await fetch('/api/photos');
+                const data = await response.json();
+                photos = data.photos;
+                
+                if (photos.length === 0) {
+                    document.getElementById('loading').innerHTML = '<div>No photos found in the folder.</div>';
+                    return;
+                }
+                
+                initSlideshow();
+            } catch (error) {
+                console.error('Error loading photos:', error);
+                document.getElementById('loading').innerHTML = '<div>Error loading photos. Check console.</div>';
+            }
+        }
+        
+        // Initialize the slideshow
+        function initSlideshow() {
+            const slideshow = document.getElementById('slideshow');
+            const loading = document.getElementById('loading');
+            const controls = document.getElementById('controls');
+            
+            // Create slide elements
+            photos.forEach((photo, index) => {
+                const slide = document.createElement('div');
+                slide.className = 'slide';
+                slide.id = `slide-${index}`;
+                
+                const img = document.createElement('img');
+                img.src = photo.url;
+                img.alt = photo.name;
+                img.loading = 'lazy';
+                
+                slide.appendChild(img);
+                slideshow.appendChild(slide);
+            });
+            
+            // Hide loading, show controls
+            loading.style.display = 'none';
+            controls.style.display = 'flex';
+            
+            // Show first slide
+            showSlide(0);
+            
+            // Start auto-advance
+            startAutoPlay();
+            
+            // Update counter
+            updateCounter();
+        }
+        
+        // Show specific slide
+        function showSlide(index) {
+            // Remove active class from all slides
+            document.querySelectorAll('.slide').forEach(slide => {
+                slide.classList.remove('active');
+            });
+            
+            // Add active class to current slide
+            const currentSlide = document.getElementById(`slide-${index}`);
+            if (currentSlide) {
+                currentSlide.classList.add('active');
+            }
+            
+            currentIndex = index;
+            updateCounter();
+        }
+        
+        // Next slide
+        function nextSlide() {
+            const next = (currentIndex + 1) % photos.length;
+            showSlide(next);
+        }
+        
+        // Previous slide
+        function prevSlide() {
+            const prev = (currentIndex - 1 + photos.length) % photos.length;
+            showSlide(prev);
+        }
+        
+        // Start auto-play
+        function startAutoPlay() {
+            if (intervalId) clearInterval(intervalId);
+            intervalId = setInterval(() => {
+                if (!isPaused) {
+                    nextSlide();
+                }
+            }, SLIDE_DURATION);
+        }
+        
+        // Toggle pause/play
+        function togglePause() {
+            isPaused = !isPaused;
+            document.getElementById('status').textContent = isPaused ? 'Paused' : 'Playing';
+        }
+        
+        // Update counter
+        function updateCounter() {
+            document.getElementById('counter').textContent = `${currentIndex + 1} / ${photos.length}`;
+        }
+        
+        // Keyboard controls
+        document.addEventListener('keydown', (e) => {
+            switch(e.key) {
+                case ' ':
+                case 'Spacebar':
+                    e.preventDefault();
+                    togglePause();
+                    break;
+                case 'ArrowRight':
+                    e.preventDefault();
+                    nextSlide();
+                    break;
+                case 'ArrowLeft':
+                    e.preventDefault();
+                    prevSlide();
+                    break;
+            }
+        });
+        
+        // Load photos on page load
+        loadPhotos();
+    </script>
+</body>
+</html>
+
